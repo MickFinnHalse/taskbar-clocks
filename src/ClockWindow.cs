@@ -21,6 +21,7 @@ namespace TaskbarClocks
         private TimeZoneInfo _home;                        // where the user is
         private Rectangle[] _cells     = new Rectangle[0];
         private int[]       _cellTimeX = new int[0];   // where each clock's time starts
+        private bool        _meetInMiddle;              // 2 x 2: left pair right-aligned, right pair left-aligned
         private Font        _font;
         private Bitmap      _frame;                    // the last thing drawn, painted as is
         private float       _fittedSize;               // the size actually in use after shrinking
@@ -306,6 +307,7 @@ namespace TaskbarClocks
 
                 if (n == 0)
                 {
+                    _meetInMiddle = false;
                     _cells = new Rectangle[0];
                     _cellTimeX = new int[0];
                     ClientSize = new Size(TextWidth(g, PlaceholderText, _font) + PadX * 2, lineH + PadY * 2 + 6);
@@ -347,6 +349,7 @@ namespace TaskbarClocks
                         _cellTimeX[i] = colX[c] + labelW[c] + LabelGap;
                     }
                     ClientSize = new Size(x - ColGap + PadX, rows * lineH + PadY * 2);
+                    _meetInMiddle = rows == 2 && cols == 2;
                 }
             }
 
@@ -401,11 +404,25 @@ namespace TaskbarClocks
                     Rectangle r = _cells[i];
                     using (var b = new SolidBrush(c.Colour))
                     {
-                        int labelRight = _cellTimeX[i] - LabelGap;
+                        string time = _times[i] + _offsets[i];
                         int w = Math.Min(TextWidth(g, c.Caption, _font), MaxLabel);
-                        g.DrawString(c.Caption, _font, b,
-                                     new RectangleF(labelRight - w, r.Y, w + 1, r.Height), Typo);
-                        g.DrawString(_times[i] + _offsets[i], _font, b, _cellTimeX[i], r.Y, Typo);
+                        int labelX, timeX;
+                        if (_meetInMiddle)
+                        {
+                            // Two by two: the left-hand clocks hug the middle from the left
+                            // and the right-hand ones from the right, so both pairs meet
+                            // in a neat line down the centre.
+                            int block = w + LabelGap + TextWidth(g, time, _font);
+                            labelX = i % 2 == 0 ? r.Right - block : r.X;
+                            timeX  = labelX + w + LabelGap;
+                        }
+                        else
+                        {
+                            timeX  = _cellTimeX[i];
+                            labelX = timeX - LabelGap - w;
+                        }
+                        g.DrawString(c.Caption, _font, b, new RectangleF(labelX, r.Y, w + 1, r.Height), Typo);
+                        g.DrawString(time, _font, b, timeX, r.Y, Typo);
                     }
                 }
             }
