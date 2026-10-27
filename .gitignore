@@ -1,0 +1,6 @@
+# Build output - regenerate with build.ps1, which compiles src\*.cs
+TaskbarClocks.exe
+*.zip
+
+# Personal clock list, written next to the exe
+settings.ini
