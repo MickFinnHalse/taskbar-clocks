@@ -54,9 +54,16 @@ namespace TaskbarClocks
             return f;
         }
 
-        public ClockWindow(Settings cfg)
+        public ClockWindow(Settings cfg, System.Threading.WaitHandle showRequests)
         {
             _cfg = cfg;
+
+            // Signalled by a second launch. The wait runs on a pool thread, so the work
+            // is passed back to the UI thread.
+            System.Threading.ThreadPool.RegisterWaitForSingleObject(showRequests, delegate
+            {
+                if (IsHandleCreated) BeginInvoke((MethodInvoker)ComeForward);
+            }, null, System.Threading.Timeout.Infinite, false);
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar   = false;     // no taskbar button of its own
@@ -87,7 +94,29 @@ namespace TaskbarClocks
         {
             base.OnLoad(e);
             Relayout();
+            if (!_cfg.AutoPosition) RestoreManualPosition();
             _tick.Start();
+        }
+
+        /// <summary>
+        /// Puts a dragged window back where it was left. A spot that is no longer on any
+        /// screen (a monitor unplugged, the resolution changed) returns it to the tray.
+        /// </summary>
+        private void RestoreManualPosition()
+        {
+            var spot = new Rectangle(_cfg.ManualX, _cfg.ManualY, Width, Height);
+            foreach (Screen s in Screen.AllScreens)
+                if (s.Bounds.IntersectsWith(spot)) { Location = spot.Location; return; }
+            _cfg.AutoPosition = true;
+            Reposition();
+        }
+
+        /// <summary>A second launch: back on screen if it has strayed off, and on top.</summary>
+        private void ComeForward()
+        {
+            if (_cfg.AutoPosition) Reposition();
+            else RestoreManualPosition();
+            Native.BringToTop(Handle);
         }
 
         // Keep the window out of Alt-Tab. Deliberately NOT WS_EX_NOACTIVATE: a window
