@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.Globalization;
 using System.Windows.Forms;
 
@@ -13,11 +15,12 @@ namespace TaskbarClocks
         private readonly ToolTip  _tip = new ToolTip { InitialDelay = 400, ReshowDelay = 100 };
 
         private readonly List<TimeZoneInfo> _zones = new List<TimeZoneInfo>();   // parallel to _cfg.Clocks; null if missing
-        private string[]    _times = new string[0];
-        private Rectangle[] _cells = new Rectangle[0];
+        private string[]    _times     = new string[0];
+        private Rectangle[] _cells     = new Rectangle[0];
         private int[]       _cellTimeX = new int[0];   // where each clock's time starts
-        private Font        _labelFont;
-        private Font        _timeFont;
+        private Font        _font;
+        private Bitmap      _frame;                    // the last thing drawn, painted as is
+        private float       _fittedSize;               // the size actually in use after shrinking
         private int         _timeW;
         private int         _maxHeight;
 
@@ -32,13 +35,24 @@ namespace TaskbarClocks
         private const int   Gap      = 8;     // px between our right edge and the tray
         private const int   PadX     = 8;
         private const int   PadY     = 2;
-        private const int   LabelGap = 4;     // between a label and its time
+        private const int   LabelGap = 4;     // between the end of a label and its time
         private const int   ColGap   = 14;    // between neighbouring clocks
         private const int   MaxLabel = 160;   // longer labels are cut with an ellipsis
         private const float MinFont  = 6.5f;
 
-        private const TextFormatFlags TextFlags =
-            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.VerticalCenter;
+        public static readonly float[] TextSizes = { 8f, 9f, 10f, 11f, 12f, 13f, 14f, 16f };
+
+        // Typographic format measures the ink and nothing else, so a label's measured
+        // width ends where its last letter ends and LabelGap is the whole gap.
+        private static readonly StringFormat Typo = MakeTypo();
+
+        private static StringFormat MakeTypo()
+        {
+            var f = (StringFormat)StringFormat.GenericTypographic.Clone();
+            f.FormatFlags |= StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces;
+            f.Trimming = StringTrimming.EllipsisCharacter;
+            return f;
+        }
 
         public ClockWindow(Settings cfg)
         {
@@ -48,12 +62,10 @@ namespace TaskbarClocks
             ShowInTaskbar   = false;     // no taskbar button of its own
             TopMost         = true;
             StartPosition   = FormStartPosition.Manual;
-            BackColor       = Theme.RestBack;
             DoubleBuffered  = true;
 
             ResolveZones();
             UpdateTimes();
-            Relayout();
 
             ContextMenuStrip = new ContextMenuStrip { ShowImageMargin = false, ShowCheckMargin = true };
             ContextMenuStrip.Opening += OnMenuOpening;
@@ -62,7 +74,6 @@ namespace TaskbarClocks
             // turns over on the taskbar within a second of it turning over in the city.
             _tick = new Timer { Interval = 1000 };
             _tick.Tick += OnTick;
-            _tick.Start();
 
             MouseDown  += OnMouseDown;
             MouseMove  += OnMouseMove;
@@ -70,6 +81,13 @@ namespace TaskbarClocks
             MouseLeave += delegate { _hover = -1; };
 
             HookSystemEvents();
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            Relayout();
+            _tick.Start();
         }
 
         // Keep the window out of Alt-Tab. Deliberately NOT WS_EX_NOACTIVATE: a window
@@ -130,7 +148,7 @@ namespace TaskbarClocks
         {
             if (UpdateTimes())
             {
-                Invalidate();
+                Render();
                 if (_hover >= 0) RefreshTip();
             }
 
@@ -149,7 +167,7 @@ namespace TaskbarClocks
             {
                 _zoneRefresh = 0;
                 ResolveZones();
-                if (UpdateTimes()) Invalidate();
+                if (UpdateTimes()) Render();
             }
         }
 
@@ -179,6 +197,19 @@ namespace TaskbarClocks
             return reserved > 0 ? reserved : 48;
         }
 
+        /// <summary>A 96 dpi surface, so measuring and drawing always agree.</summary>
+        private static Bitmap Surface(int w, int h)
+        {
+            var bmp = new Bitmap(Math.Max(1, w), Math.Max(1, h), PixelFormat.Format32bppArgb);
+            bmp.SetResolution(96f, 96f);
+            return bmp;
+        }
+
+        private static int TextWidth(Graphics g, string s, Font f)
+        {
+            return (int)Math.Ceiling(g.MeasureString(s, f, PointF.Empty, Typo).Width);
+        }
+
         /// <summary>
         /// Picks the largest font, up to FontSize, at which every row fits inside the
         /// taskbar's height, then measures the cells and sizes the window around them.
@@ -190,74 +221,65 @@ namespace TaskbarClocks
             GridShape(n, out rows, out cols);
             _maxHeight = MaxHeight();
 
-            float size = _cfg.FontSize;
-            int lineH;
-            while (true)
+            using (Bitmap probe = Surface(1, 1))
+            using (Graphics g = Graphics.FromImage(probe))
             {
-                SetFonts(size);
-                // NoPadding measuring trims the font's own line spacing and came out
-                // shorter than the glyphs need, so the font's line height is the floor.
-                lineH = Math.Max(_timeFont.Height,
-                                 TextRenderer.MeasureText("0:Ag", _timeFont, Size.Empty, TextFlags).Height);
-                if (rows * lineH + PadY * 2 <= _maxHeight || size <= MinFont) break;
-                size -= 0.5f;
+                float size = _cfg.FontSize;
+                int lineH;
+                while (true)
+                {
+                    if (_font != null) _font.Dispose();
+                    _font = new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Point);
+                    lineH = (int)Math.Ceiling(_font.GetHeight(g));
+                    if (rows * lineH + PadY * 2 <= _maxHeight || size <= MinFont) break;
+                    size -= 0.5f;
+                }
+                _fittedSize = size;
+
+                if (n == 0)
+                {
+                    _cells = new Rectangle[0];
+                    _cellTimeX = new int[0];
+                    ClientSize = new Size(TextWidth(g, PlaceholderText, _font) + PadX * 2, lineH + PadY * 2 + 6);
+                }
+                else
+                {
+                    // The widest time this format can show, so nothing jitters sideways
+                    // as the minutes tick over.
+                    _timeW = TextWidth(g, _cfg.Use24Hour ? "00:00" : "00:00 PM", _font);
+
+                    // Each column is as wide as its widest label. Labels are right-aligned
+                    // in it, so every label ends LabelGap before its time and the times
+                    // still line up down the column.
+                    var labelW = new int[cols];
+                    for (int i = 0; i < n; i++)
+                    {
+                        int w = Math.Min(TextWidth(g, _cfg.Clocks[i].Caption, _font), MaxLabel);
+                        labelW[i % cols] = Math.Max(labelW[i % cols], w);
+                    }
+
+                    var colX = new int[cols];
+                    int x = PadX;
+                    for (int c = 0; c < cols; c++)
+                    {
+                        colX[c] = x;
+                        x += labelW[c] + LabelGap + _timeW + ColGap;
+                    }
+
+                    _cells     = new Rectangle[n];
+                    _cellTimeX = new int[n];
+                    for (int i = 0; i < n; i++)
+                    {
+                        int r = i / cols, c = i % cols;
+                        _cells[i]     = new Rectangle(colX[c], PadY + r * lineH, labelW[c] + LabelGap + _timeW, lineH);
+                        _cellTimeX[i] = colX[c] + labelW[c] + LabelGap;
+                    }
+                    ClientSize = new Size(x - ColGap + PadX, rows * lineH + PadY * 2);
+                }
             }
 
-            if (n == 0)
-            {
-                Size m = TextRenderer.MeasureText(PlaceholderText, _labelFont, Size.Empty, TextFlags);
-                _cells = new Rectangle[0];
-                ClientSize = new Size(m.Width + PadX * 2, Math.Min(_maxHeight, lineH + PadY * 2 + 6));
-                Invalidate();
-                if (_cfg.AutoPosition && !_dragging) Reposition();
-                return;
-            }
-
-            // Measure the widest time this format can show, so nothing jitters sideways
-            // as the minutes tick over.
-            _timeW = TextRenderer.MeasureText(_cfg.Use24Hour ? "00:00" : "00:00 PM",
-                                              _timeFont, Size.Empty, TextFlags).Width;
-
-            // Labels line up in columns, so each column is as wide as its widest label.
-            var labelW = new int[cols];
-            for (int i = 0; i < n; i++)
-            {
-                int w = TextRenderer.MeasureText(_cfg.Clocks[i].Caption, _labelFont, Size.Empty, TextFlags).Width;
-                int c = i % cols;
-                labelW[c] = Math.Max(labelW[c], Math.Min(w, MaxLabel));
-            }
-
-            var colX = new int[cols];
-            int x = PadX;
-            for (int c = 0; c < cols; c++)
-            {
-                colX[c] = x;
-                x += labelW[c] + (labelW[c] > 0 ? LabelGap : 0) + _timeW + ColGap;
-            }
-            int width  = x - ColGap + PadX;
-            int height = rows * lineH + PadY * 2;
-
-            _cells     = new Rectangle[n];
-            _cellTimeX = new int[n];
-            for (int i = 0; i < n; i++)
-            {
-                int r = i / cols, c = i % cols;
-                int labelSpan = labelW[c] + (labelW[c] > 0 ? LabelGap : 0);
-                _cells[i]     = new Rectangle(colX[c], PadY + r * lineH, labelSpan + _timeW, lineH);
-                _cellTimeX[i] = colX[c] + labelSpan;
-            }
-
-            ClientSize = new Size(width, height);
-            Invalidate();
             if (_cfg.AutoPosition && !_dragging) Reposition();
-        }
-
-        private void SetFonts(float size)
-        {
-            if (_labelFont != null) _labelFont.Dispose();
-            if (_timeFont  != null) _timeFont.Dispose();
-            _labelFont = new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Point);
-            _timeFont  = new Font("Segoe UI", size, FontStyle.Bold,    GraphicsUnit.Point);
+            Render();
         }
 
         private void Reposition()
@@ -280,30 +302,59 @@ namespace TaskbarClocks
 
         private const string PlaceholderText = "+ Add a clock";
 
+        /// <summary>
+        /// Draws the clocks onto the same 96 dpi surface they were measured on, so sizes
+        /// match exactly, and keeps it for OnPaint. Painting straight onto the window would
+        /// render the fonts at the monitor's dpi and outgrow the measured cells.
+        /// </summary>
+        private void Render()
+        {
+            if (_font == null) return;
+
+            Bitmap bmp = Surface(ClientSize.Width, ClientSize.Height);
+            using (Graphics g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Theme.SolidBack(_cfg.Background));
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+                if (_cfg.Clocks.Count == 0)
+                {
+                    using (var b = new SolidBrush(Theme.PlaceholderOn(_cfg.Background)))
+                        g.DrawString(PlaceholderText, _font, b, PadX, PadY + 3, Typo);
+                }
+
+                for (int i = 0; i < _cells.Length && i < _cfg.Clocks.Count; i++)
+                {
+                    ClockEntry c = _cfg.Clocks[i];
+                    Rectangle r = _cells[i];
+                    using (var b = new SolidBrush(c.Colour))
+                    {
+                        int labelRight = _cellTimeX[i] - LabelGap;
+                        int w = Math.Min(TextWidth(g, c.Caption, _font), MaxLabel);
+                        g.DrawString(c.Caption, _font, b,
+                                     new RectangleF(labelRight - w, r.Y, w + 1, r.Height), Typo);
+                        g.DrawString(_times[i], _font, b, _cellTimeX[i], r.Y, Typo);
+                    }
+                }
+            }
+
+            if (_frame != null) _frame.Dispose();
+            _frame = bmp;
+            Invalidate();
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
-            Graphics g = e.Graphics;
+            // An explicit pixel rectangle: "unscaled" drawing still scales a 96 dpi bitmap
+            // up to the monitor's dpi, which cut off the right and bottom edges.
+            if (_frame != null)
+                e.Graphics.DrawImage(_frame, new Rectangle(0, 0, _frame.Width, _frame.Height),
+                                     0, 0, _frame.Width, _frame.Height, GraphicsUnit.Pixel);
+        }
 
-            if (_cfg.Clocks.Count == 0)
-            {
-                TextRenderer.DrawText(g, PlaceholderText, _labelFont, ClientRectangle, Theme.PlaceholderFore,
-                                      TextFlags | TextFormatFlags.HorizontalCenter);
-                return;
-            }
-
-            for (int i = 0; i < _cells.Length && i < _cfg.Clocks.Count; i++)
-            {
-                // The time starts straight after the column's widest label, so times
-                // line up down a column and the gap stays at LabelGap.
-                ClockEntry c = _cfg.Clocks[i];
-                Rectangle r = _cells[i];
-                var labelRect = new Rectangle(r.X, r.Y, _cellTimeX[i] - r.X, r.Height);
-                var timeRect  = new Rectangle(_cellTimeX[i], r.Y, _timeW, r.Height);
-                TextRenderer.DrawText(g, c.Caption, _labelFont, labelRect, c.Colour,
-                                      TextFlags | TextFormatFlags.EndEllipsis);
-                TextRenderer.DrawText(g, _times[i], _timeFont, timeRect, c.Colour, TextFlags);
-            }
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            // The frame covers the whole window; skipping the erase stops a flicker.
         }
 
         // ---------- hover details ----------
@@ -437,6 +488,41 @@ namespace TaskbarClocks
                 delegate { SetLayout(ClockLayout.TwoRows); }) { Checked = _cfg.Layout == ClockLayout.TwoRows });
             items.Add(layout);
 
+            // A size too big for the taskbar is shrunk to fit; the tick stays on the size
+            // that was picked, and the note says what is actually showing.
+            var textSize = new ToolStripMenuItem("Text size");
+            foreach (float s in TextSizes)
+            {
+                float size = s;
+                bool chosen = Math.Abs(_cfg.FontSize - size) < 0.01f;
+                string text = size.ToString("0", CultureInfo.InvariantCulture);
+                if (chosen && _fittedSize < size - 0.01f)
+                    text += "  (shrunk to " + _fittedSize.ToString("0.#", CultureInfo.InvariantCulture)
+                          + " to fit the taskbar)";
+                textSize.DropDownItems.Add(new ToolStripMenuItem(text, null, delegate
+                {
+                    _cfg.FontSize = size;
+                    _cfg.Save();
+                    Relayout();
+                }) { Checked = chosen });
+            }
+            items.Add(textSize);
+
+            var back = new ToolStripMenuItem("Background");
+            string[]          backNames  = { "Grey", "White", "Black" };
+            ClockBackground[] backValues = { ClockBackground.Grey, ClockBackground.White, ClockBackground.Black };
+            for (int b = 0; b < backValues.Length; b++)
+            {
+                ClockBackground value = backValues[b];
+                back.DropDownItems.Add(new ToolStripMenuItem(backNames[b], null, delegate
+                {
+                    _cfg.Background = value;
+                    _cfg.Save();
+                    Render();
+                }) { Checked = _cfg.Background == value });
+            }
+            items.Add(back);
+
             items.Add(new ToolStripMenuItem("24-hour time", null, delegate
             {
                 _cfg.Use24Hour = !_cfg.Use24Hour;
@@ -462,8 +548,8 @@ namespace TaskbarClocks
         }
 
         /// <summary>
-        /// The menu has a light background, so a pale clock colour (white, amber) would
-        /// vanish there; those fall back to the normal menu text colour.
+        /// The menu has a light background, so a pale clock colour (white, light yellow)
+        /// would vanish there; those fall back to the normal menu text colour.
         /// </summary>
         private static Color ReadableOnMenu(Color c)
         {
@@ -481,7 +567,7 @@ namespace TaskbarClocks
         private void AddClock()
         {
             if (_cfg.Clocks.Count >= Settings.MaxClocks) return;
-            using (var dlg = new ClockDialog(null, NextFreeColour(), _cfg.Use24Hour))
+            using (var dlg = new ClockDialog(null, NextFreeColour(), _cfg.Use24Hour, _cfg.Background))
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 _cfg.Clocks.Add(dlg.Result);
@@ -491,7 +577,7 @@ namespace TaskbarClocks
 
         private void EditClock(int i)
         {
-            using (var dlg = new ClockDialog(_cfg.Clocks[i], _cfg.Clocks[i].Colour, _cfg.Use24Hour))
+            using (var dlg = new ClockDialog(_cfg.Clocks[i], _cfg.Clocks[i].Colour, _cfg.Use24Hour, _cfg.Background))
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
                 _cfg.Clocks[i] = dlg.Result;
@@ -527,17 +613,17 @@ namespace TaskbarClocks
             Relayout();
         }
 
-        /// <summary>The first palette colour no clock is using yet.</summary>
+        /// <summary>The first of the starting colours that no clock is using yet.</summary>
         private Color NextFreeColour()
         {
-            foreach (Color p in Palette.Colours)
+            foreach (Color p in Palette.StartingColours)
             {
                 bool used = false;
                 foreach (ClockEntry c in _cfg.Clocks)
                     if (c.Colour.ToArgb() == p.ToArgb()) { used = true; break; }
                 if (!used) return p;
             }
-            return Palette.Colours[0];
+            return Palette.StartingColours[0];
         }
 
         // ---------- system ----------
@@ -546,24 +632,21 @@ namespace TaskbarClocks
         {
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s, e) =>
             {
-                RefreshTheme();
+                Theme.Refresh();
                 Relayout();
             };
-            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) => RefreshTheme();
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged += (s, e) =>
+            {
+                Theme.Refresh();
+                Render();
+            };
 
             // Fires when the PC's own clock or time zone changes.
             Microsoft.Win32.SystemEvents.TimeChanged += (s, e) =>
             {
                 ResolveZones();
-                if (UpdateTimes()) Invalidate();
+                if (UpdateTimes()) Render();
             };
-        }
-
-        private void RefreshTheme()
-        {
-            Theme.Refresh();
-            BackColor = Theme.RestBack;
-            Invalidate();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)

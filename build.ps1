@@ -22,7 +22,8 @@ Write-Host "Compiling $($sources.Count) source files..." -ForegroundColor Cyan
 $refs = @(
     '/reference:System.dll',
     '/reference:System.Drawing.dll',
-    '/reference:System.Windows.Forms.dll'
+    '/reference:System.Windows.Forms.dll',
+    '/reference:System.Web.Extensions.dll'   # JSON reader for the place search
 )
 
 $args = @(

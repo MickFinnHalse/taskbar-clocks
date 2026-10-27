@@ -1,5 +1,5 @@
 using System;
-using System.Collections.ObjectModel;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Windows.Forms;
@@ -7,14 +7,22 @@ using System.Windows.Forms;
 namespace TaskbarClocks
 {
     /// <summary>
-    /// Add or change one clock: a label, a city (which fills in the time zone), and a
-    /// colour from the palette or typed as a hex code.
+    /// Add or change one clock: a label, a city or town (which fills in the time zone),
+    /// and a colour from the palette or typed as a hex code.
+    ///
+    /// Finding the time zone, in order: the built-in city list as you type; Search, which
+    /// looks any town up online; "Same time zone as" a nearby listed city when the search
+    /// comes up empty or there is no internet; and the time zone list itself.
     /// </summary>
     public sealed class ClockDialog : Form
     {
         private readonly TextBox  _label;
         private readonly TextBox  _city;
-        private readonly Label    _match;
+        private readonly Button   _search;
+        private readonly Label    _status;
+        private readonly ListBox  _results;
+        private readonly Label    _sameAsCaption;
+        private readonly TextBox  _sameAs;
         private readonly ComboBox _zone;
         private readonly Label    _now;
         private readonly TextBox  _hex;
@@ -22,15 +30,16 @@ namespace TaskbarClocks
         private readonly Button[] _swatches;
         private readonly Timer    _tick;
         private readonly bool     _use24Hour;
-        private readonly Font     _previewLabelFont = new Font("Segoe UI", 10f, FontStyle.Regular);
-        private readonly Font     _previewTimeFont  = new Font("Segoe UI", 10f, FontStyle.Bold);
+        private readonly Font     _previewFont = new Font("Segoe UI", 10f, FontStyle.Regular);
 
         private Color _colour;
         private bool  _settingHex;
+        private bool  _settingCity;
+        private Place _picked;       // the search result chosen, while the city box still shows it
 
         public ClockEntry Result { get; private set; }
 
-        public ClockDialog(ClockEntry existing, Color colour, bool use24Hour)
+        public ClockDialog(ClockEntry existing, Color colour, bool use24Hour, ClockBackground background)
         {
             _colour    = colour;
             _use24Hour = use24Hour;
@@ -44,48 +53,73 @@ namespace TaskbarClocks
             MaximizeBox     = false;
             ShowInTaskbar   = false;
             TopMost         = true;
-            ClientSize      = new Size(440, 402);
+            ClientSize      = new Size(440, 486);
 
             Controls.Add(Caption("Label  (e.g. the person's name)", 12));
             _label = new TextBox { Bounds = new Rectangle(12, 32, 416, 24), MaxLength = 40 };
             Controls.Add(_label);
 
-            Controls.Add(Caption("City  (start typing, e.g. Sydney)", 66));
+            Controls.Add(Caption("City or town", 66));
             _city = new TextBox
             {
-                Bounds             = new Rectangle(12, 86, 416, 24),
+                Bounds             = new Rectangle(12, 86, 330, 24),
                 AutoCompleteMode   = AutoCompleteMode.SuggestAppend,
-                AutoCompleteSource = AutoCompleteSource.CustomSource
+                AutoCompleteSource = AutoCompleteSource.CustomSource,
+                AutoCompleteCustomSource = BuiltInNames()
             };
-            var names = new AutoCompleteStringCollection();
-            foreach (City c in Cities.All) names.Add(c.Display);
-            _city.AutoCompleteCustomSource = names;
             Controls.Add(_city);
+            _search = new Button { Text = "Search", Bounds = new Rectangle(350, 85, 78, 26) };
+            _search.Click += delegate { RunSearch(); };
+            Controls.Add(_search);
+            new ToolTip().SetToolTip(_search,
+                "Looks the name up online with Open-Meteo's free place search, so small towns can be found.");
 
-            _match = new Label { Bounds = new Rectangle(12, 112, 416, 18), ForeColor = SystemColors.GrayText };
-            Controls.Add(_match);
+            _status = new Label { Bounds = new Rectangle(12, 114, 416, 18), ForeColor = SystemColors.GrayText };
+            Controls.Add(_status);
 
-            Controls.Add(Caption("Time zone", 136));
+            // One slot, two uses: the search results, or - when the search finds nothing -
+            // the "Same time zone as" fallback.
+            _results = new ListBox { Bounds = new Rectangle(12, 134, 416, 64), Visible = false, IntegralHeight = false };
+            _results.SelectedIndexChanged += delegate { PickResult(); };
+            Controls.Add(_results);
+
+            _sameAsCaption = new Label
+            {
+                Text = "Same time zone as", Bounds = new Rectangle(12, 140, 120, 20), Visible = false
+            };
+            Controls.Add(_sameAsCaption);
+            _sameAs = new TextBox
+            {
+                Bounds             = new Rectangle(134, 137, 294, 24),
+                AutoCompleteMode   = AutoCompleteMode.SuggestAppend,
+                AutoCompleteSource = AutoCompleteSource.CustomSource,
+                AutoCompleteCustomSource = BuiltInNames(),
+                Visible            = false
+            };
+            _sameAs.TextChanged += delegate { OnSameAsTyped(); };
+            Controls.Add(_sameAs);
+
+            Controls.Add(Caption("Time zone", 206));
             _zone = new ComboBox
             {
-                Bounds        = new Rectangle(12, 156, 416, 24),
+                Bounds        = new Rectangle(12, 226, 416, 24),
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
-            ReadOnlyCollection<TimeZoneInfo> zones = TimeZoneInfo.GetSystemTimeZones();
-            foreach (TimeZoneInfo tz in zones) _zone.Items.Add(tz);   // shows DisplayName
+            foreach (TimeZoneInfo tz in TimeZoneInfo.GetSystemTimeZones()) _zone.Items.Add(tz);   // shows DisplayName
             Controls.Add(_zone);
 
-            _now = new Label { Bounds = new Rectangle(12, 186, 416, 34) };
+            _now = new Label { Bounds = new Rectangle(12, 256, 416, 34) };
             Controls.Add(_now);
 
-            Controls.Add(Caption("Colour", 234));
+            Controls.Add(Caption("Colour", 300));
             _swatches = new Button[Palette.Colours.Length];
             for (int i = 0; i < Palette.Colours.Length; i++)
             {
                 Color sw = Palette.Colours[i];
+                int row = i / Palette.PerRow, col = i % Palette.PerRow;
                 var b = new Button
                 {
-                    Bounds    = new Rectangle(12 + i * 32, 254, 26, 26),
+                    Bounds    = new Rectangle(12 + col * 32, 320 + row * 32, 26, 26),
                     BackColor = sw,
                     FlatStyle = FlatStyle.Flat,
                     TabStop   = false
@@ -97,16 +131,16 @@ namespace TaskbarClocks
                 Controls.Add(b);
             }
 
-            Controls.Add(new Label { Text = "or hex code", Bounds = new Rectangle(12, 296, 80, 20) });
-            _hex = new TextBox { Bounds = new Rectangle(94, 293, 86, 24), MaxLength = 7 };
+            Controls.Add(new Label { Text = "or hex code", Bounds = new Rectangle(12, 394, 80, 20) });
+            _hex = new TextBox { Bounds = new Rectangle(94, 391, 86, 24), MaxLength = 7 };
             _hex.TextChanged += delegate { OnHexTyped(); };
             Controls.Add(_hex);
 
-            // How it will look on the taskbar, on the taskbar's own background.
+            // How it will look, on the chosen background.
             _preview = new Panel
             {
-                Bounds      = new Rectangle(196, 288, 232, 34),
-                BackColor   = Theme.RestBack,
+                Bounds      = new Rectangle(196, 386, 232, 34),
+                BackColor   = Theme.SolidBack(background),
                 BorderStyle = BorderStyle.FixedSingle
             };
             _preview.Paint += OnPreviewPaint;
@@ -115,13 +149,13 @@ namespace TaskbarClocks
             var ok = new Button
             {
                 Text   = existing == null ? "Add" : "Save",
-                Bounds = new Rectangle(272, 358, 74, 28)
+                Bounds = new Rectangle(272, 444, 74, 28)
             };
             var cancel = new Button
             {
                 Text         = "Cancel",
                 DialogResult = DialogResult.Cancel,
-                Bounds       = new Rectangle(354, 358, 74, 28)
+                Bounds       = new Rectangle(354, 444, 74, 28)
             };
             ok.Click += delegate { Commit(); };
             Controls.Add(ok);
@@ -139,7 +173,7 @@ namespace TaskbarClocks
             _label.TextChanged         += delegate { _preview.Invalidate(); };
             _zone.SelectedIndexChanged += delegate { ShowTimeThere(); _preview.Invalidate(); };
 
-            ShowMatch(Cities.Find(_city.Text));
+            ShowBuiltInMatch(Cities.Find(_city.Text));
             SetColour(_colour, true);
             ShowTimeThere();
 
@@ -159,24 +193,108 @@ namespace TaskbarClocks
             };
         }
 
+        private static AutoCompleteStringCollection BuiltInNames()
+        {
+            var names = new AutoCompleteStringCollection();
+            foreach (City c in Cities.All) names.Add(c.Display);
+            return names;
+        }
+
+        /// <summary>Enter in the city box searches, rather than closing the dialog.</summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Enter && _city.Focused && Cities.Find(_city.Text) == null
+                && _city.Text.Trim().Length > 0)
+            {
+                RunSearch();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
         // ---------- city and zone ----------
 
         private void OnCityTyped()
         {
+            if (_settingCity) return;
+            _picked = null;
+            ShowSlot(null);
             City c = Cities.Find(_city.Text);
             if (c != null) SelectZone(c.ZoneId);
-            ShowMatch(c);
+            ShowBuiltInMatch(c);
             _preview.Invalidate();
         }
 
-        private void ShowMatch(City c)
+        private void ShowBuiltInMatch(City c)
         {
             if (_city.Text.Trim().Length == 0)
-                _match.Text = "";
+                _status.Text = "Start typing - the built-in list suggests cities as you go.";
             else if (c != null)
-                _match.Text = "Found " + c.Display + ". Its time zone is filled in below.";
+                _status.Text = "Found " + c.Display + ". Its time zone is filled in below.";
             else
-                _match.Text = "Not in the built-in list - pick its time zone below.";
+                _status.Text = "Not in the built-in list. Press Search (or Enter) to look it up.";
+        }
+
+        private void RunSearch()
+        {
+            string name = _city.Text.Trim();
+            if (name.Length == 0) return;
+            _search.Enabled = false;
+            _status.Text = "Searching for \"" + name + "\"...";
+            ShowSlot(null);
+
+            PlaceLookup.Search(name, (places, error) =>
+            {
+                if (IsDisposed) return;
+                _search.Enabled = true;
+                if (_city.Text.Trim() != name) return;   // typed on while it was searching
+
+                if (places.Count > 0)
+                {
+                    _results.Items.Clear();
+                    foreach (Place p in places) _results.Items.Add(p);
+                    ShowSlot(_results);
+                    _status.Text = places.Count == 1
+                                 ? "Found one place:"
+                                 : "Found " + places.Count + " places. Pick the right one:";
+                    if (places.Count == 1) _results.SelectedIndex = 0;
+                    return;
+                }
+
+                _status.Text = (error ?? "No town or city called \"" + name + "\" was found.")
+                             + " Type a nearby city instead:";
+                ShowSlot(_sameAs);
+                _sameAs.Focus();
+            });
+        }
+
+        /// <summary>Shows the results list, the "same time zone as" row, or neither.</summary>
+        private void ShowSlot(Control which)
+        {
+            _results.Visible       = which == _results;
+            _sameAs.Visible        = which == _sameAs;
+            _sameAsCaption.Visible = which == _sameAs;
+        }
+
+        private void PickResult()
+        {
+            Place p = _results.SelectedItem as Place;
+            if (p == null) return;
+            _picked = p;
+            _settingCity = true;
+            _city.Text = p.Name;
+            _settingCity = false;
+            SelectZone(p.ZoneId);
+            _status.Text = "Using " + p.Display + ".";
+            _preview.Invalidate();
+        }
+
+        private void OnSameAsTyped()
+        {
+            City c = Cities.Find(_sameAs.Text);
+            if (c == null) return;
+            SelectZone(c.ZoneId);
+            _status.Text = "Using the same time zone as " + c.Display + ".";
         }
 
         private void SelectZone(string id)
@@ -254,19 +372,17 @@ namespace TaskbarClocks
 
             const TextFormatFlags f = TextFormatFlags.SingleLine | TextFormatFlags.NoPadding
                                     | TextFormatFlags.VerticalCenter;
-            Size ls = TextRenderer.MeasureText(caption, _previewLabelFont, Size.Empty, f);
-            Rectangle r = _preview.ClientRectangle;
-            TextRenderer.DrawText(e.Graphics, caption, _previewLabelFont,
-                                  new Rectangle(10, 0, ls.Width, r.Height), _colour, f);
-            TextRenderer.DrawText(e.Graphics, time, _previewTimeFont,
-                                  new Rectangle(10 + ls.Width + 6, 0, r.Width - ls.Width - 16, r.Height), _colour, f);
+            TextRenderer.DrawText(e.Graphics, caption + " " + time, _previewFont,
+                                  new Rectangle(10, 0, _preview.ClientSize.Width - 20, _preview.ClientSize.Height),
+                                  _colour, f);
         }
 
         // ---------- result ----------
 
-        /// <summary>The bare city name when it matched the list, otherwise what was typed.</summary>
+        /// <summary>The place picked from a search, the bare name of a built-in city, or what was typed.</summary>
         private string CityName()
         {
+            if (_picked != null) return _picked.Name;
             City c = Cities.Find(_city.Text);
             return c != null ? c.Name : _city.Text.Trim();
         }
@@ -275,7 +391,7 @@ namespace TaskbarClocks
         {
             Color c;
             if (SelectedZone == null)
-                Refuse("Pick a time zone - typing a city from the list fills it in for you.", _zone);
+                Refuse("Pick a time zone - choosing a city or town fills it in for you.", _zone);
             else if (!ColourCode.TryParse(_hex.Text, out c))
                 Refuse("That hex code is not a colour. It should look like #3B8EEA.", _hex);
             else if (_label.Text.Trim().Length == 0 && _city.Text.Trim().Length == 0)
@@ -304,8 +420,7 @@ namespace TaskbarClocks
             if (disposing)
             {
                 _tick.Dispose();
-                _previewLabelFont.Dispose();
-                _previewTimeFont.Dispose();
+                _previewFont.Dispose();
             }
             base.Dispose(disposing);
         }

@@ -5,21 +5,49 @@ using System.Windows.Forms;
 
 namespace TaskbarClocks
 {
-    /// <summary>The swatches offered when choosing a clock's colour.</summary>
+    /// <summary>
+    /// The swatches offered when choosing a clock's colour: the classic 20-colour Paint
+    /// palette, in its two rows of ten.
+    /// </summary>
     public static class Palette
     {
+        public const int PerRow = 10;
+
         public static readonly Color[] Colours =
         {
-            ColourCode.FromHex("#1E9E44"),   // green
-            ColourCode.FromHex("#19B5A5"),   // teal
-            ColourCode.FromHex("#3B8EEA"),   // blue
-            ColourCode.FromHex("#A970FF"),   // purple
-            ColourCode.FromHex("#E85AA0"),   // pink
-            ColourCode.FromHex("#E5534B"),   // red
-            ColourCode.FromHex("#F2802B"),   // orange
-            ColourCode.FromHex("#FFAB35"),   // amber
-            ColourCode.FromHex("#8A8F98"),   // grey
-            ColourCode.FromHex("#FFFFFF")    // white
+            ColourCode.FromHex("#000000"),   // black
+            ColourCode.FromHex("#7F7F7F"),   // grey
+            ColourCode.FromHex("#880015"),   // dark red
+            ColourCode.FromHex("#ED1C24"),   // red
+            ColourCode.FromHex("#FF7F27"),   // orange
+            ColourCode.FromHex("#FFF200"),   // yellow
+            ColourCode.FromHex("#22B14C"),   // green
+            ColourCode.FromHex("#00A2E8"),   // turquoise
+            ColourCode.FromHex("#3F48CC"),   // indigo
+            ColourCode.FromHex("#A349A4"),   // purple
+
+            ColourCode.FromHex("#FFFFFF"),   // white
+            ColourCode.FromHex("#C3C3C3"),   // light grey
+            ColourCode.FromHex("#B97A57"),   // brown
+            ColourCode.FromHex("#FFAEC9"),   // rose
+            ColourCode.FromHex("#FFC90E"),   // gold
+            ColourCode.FromHex("#EFE4B0"),   // light yellow
+            ColourCode.FromHex("#B5E61D"),   // lime
+            ColourCode.FromHex("#99D9EA"),   // light turquoise
+            ColourCode.FromHex("#7092BE"),   // blue-grey
+            ColourCode.FromHex("#C8BFE7")    // lavender
+        };
+
+        /// <summary>
+        /// Given to new clocks in turn. Strong, distinct colours that read on a light or a
+        /// dark taskbar - the palette's own order would start new clocks on black.
+        /// </summary>
+        public static readonly Color[] StartingColours =
+        {
+            ColourCode.FromHex("#00A2E8"),   // turquoise
+            ColourCode.FromHex("#22B14C"),   // green
+            ColourCode.FromHex("#ED1C24"),   // red
+            ColourCode.FromHex("#A349A4")    // purple
         };
     }
 

@@ -13,6 +13,9 @@ namespace TaskbarClocks
     /// </summary>
     public enum ClockLayout { Auto, Row, TwoRows }
 
+    /// <summary>Grey matches the taskbar's lightness, for light or dark mode.</summary>
+    public enum ClockBackground { Grey, White, Black }
+
     /// <summary>One label-and-time pair on the taskbar.</summary>
     public sealed class ClockEntry
     {
@@ -38,6 +41,7 @@ namespace TaskbarClocks
 
         public List<ClockEntry> Clocks       { get; private set; }
         public ClockLayout      Layout       { get; set; }
+        public ClockBackground  Background   { get; set; }
         public bool             Use24Hour    { get; set; }
         public bool             AutoPosition { get; set; }
         public int              ManualX      { get; set; }
@@ -60,6 +64,7 @@ namespace TaskbarClocks
             {
                 Clocks       = new List<ClockEntry>(),
                 Layout       = ClockLayout.Auto,
+                Background   = ClockBackground.Grey,
                 Use24Hour    = true,
                 AutoPosition = true,
                 ManualX      = -1,
@@ -91,7 +96,8 @@ namespace TaskbarClocks
                     }
                     switch (k)
                     {
-                        case "layout":       s.Layout       = ParseLayout(v, s.Layout);      break;
+                        case "layout":       s.Layout       = ParseEnum(v, s.Layout);        break;
+                        case "background":   s.Background   = ParseEnum(v, s.Background);    break;
                         case "use24hour":    s.Use24Hour    = ParseBool(v, s.Use24Hour);     break;
                         case "autoposition": s.AutoPosition = ParseBool(v, s.AutoPosition);  break;
                         case "manualx":      s.ManualX      = ParseInt(v, s.ManualX);        break;
@@ -117,7 +123,8 @@ namespace TaskbarClocks
                 StringBuilder sb = new StringBuilder();
                 sb.AppendLine("# Taskbar Clocks settings. Close the clocks before editing by hand.");
                 sb.AppendLine("# ClockN   = Label | City | Windows time zone id | #RRGGBB   (up to 4)");
-                sb.AppendLine("# Layout   = Auto (two rows at four clocks) | Row | TwoRows");
+                sb.AppendLine("# Layout     = Auto (two rows at four clocks) | Row | TwoRows");
+                sb.AppendLine("# Background = Grey | White | Black");
                 sb.AppendLine("# FontSize = largest size in points; shrinks automatically to fit the taskbar");
                 for (int i = 0; i < Clocks.Count && i < MaxClocks; i++)
                 {
@@ -126,6 +133,7 @@ namespace TaskbarClocks
                                   + " | " + c.ZoneId + " | " + ColourCode.ToHex(c.Colour));
                 }
                 sb.AppendLine("Layout       = " + Layout);
+                sb.AppendLine("Background   = " + Background);
                 sb.AppendLine("Use24Hour    = " + (Use24Hour ? "true" : "false"));
                 sb.AppendLine("AutoPosition = " + (AutoPosition ? "true" : "false"));
                 sb.AppendLine("ManualX      = " + ManualX);
@@ -166,27 +174,43 @@ namespace TaskbarClocks
         private static float ParseFloat(string v, float d){ float r; return float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out r) ? r : d; }
         private static bool  ParseBool(string v, bool d)  { return v.Equals("true", StringComparison.OrdinalIgnoreCase) ? true
                                                                  : v.Equals("false", StringComparison.OrdinalIgnoreCase) ? false : d; }
-        private static ClockLayout ParseLayout(string v, ClockLayout d)
+        private static T ParseEnum<T>(string v, T d) where T : struct
         {
-            try { return (ClockLayout)Enum.Parse(typeof(ClockLayout), v, true); } catch { return d; }
+            T r;
+            return Enum.TryParse(v, true, out r) && Enum.IsDefined(typeof(T), r) ? r : d;
         }
     }
 
     /// <summary>
-    /// Only the background follows the Windows light/dark setting, so the tile sits in the
-    /// taskbar. Each clock's text colour is the user's own choice.
+    /// Colours not chosen per clock. RestBack is the Grey background, and follows the
+    /// Windows light/dark setting. Each clock's text colour is the user's own choice.
     /// </summary>
     public static class Theme
     {
         public static Color RestBack        { get; private set; }
         public static Color PlaceholderFore { get; private set; }
 
+        public static Color SolidBack(ClockBackground b)
+        {
+            return b == ClockBackground.Black ? Color.Black
+                 : b == ClockBackground.White ? Color.White : RestBack;
+        }
+
+        /// <summary>The "+ Add a clock" grey, readable on whichever background is in use.</summary>
+        public static Color PlaceholderOn(ClockBackground b)
+        {
+            return b == ClockBackground.Black ? Color.FromArgb(170, 170, 170)
+                 : b == ClockBackground.White ? Color.FromArgb(96, 96, 96) : PlaceholderFore;
+        }
+
         static Theme() { Refresh(); }
 
         public static void Refresh()
         {
             bool light = SystemUsesLightTheme();
-            RestBack        = light ? Color.FromArgb(243, 243, 243) : Color.FromArgb(32, 32, 32);
+            // E4E4E4: a neutral grey at the light taskbar's measured lightness (sampled
+            // at about 228 of 255 under its wallpaper tint, 27 Oct 2026).
+            RestBack        = light ? Color.FromArgb(228, 228, 228) : Color.FromArgb(32, 32, 32);
             PlaceholderFore = light ? Color.FromArgb(96, 96, 96)    : Color.FromArgb(170, 170, 170);
         }
 
