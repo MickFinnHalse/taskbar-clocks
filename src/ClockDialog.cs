@@ -30,6 +30,7 @@ namespace TaskbarClocks
         private readonly Button[] _swatches;
         private readonly Timer    _tick;
         private readonly bool     _use24Hour;
+        private readonly bool     _homeOnly;
         private readonly Font     _previewFont = new Font("Segoe UI", 10f, FontStyle.Regular);
 
         private Color _colour;
@@ -42,14 +43,20 @@ namespace TaskbarClocks
 
         public ClockEntry Result { get; private set; }
 
-        public ClockDialog(ClockEntry existing, Color colour, bool use24Hour, ClockBackground background)
+        /// <param name="homeOnly">
+        /// Asking where the user is, not adding a clock: no label, no colour, just the
+        /// place and its time zone.
+        /// </param>
+        public ClockDialog(ClockEntry existing, Color colour, bool use24Hour, ClockBackground background,
+                           bool homeOnly = false)
         {
             _colour    = colour;
             _use24Hour = use24Hour;
+            _homeOnly  = homeOnly;
 
             AutoScaleDimensions = new SizeF(96f, 96f);
             AutoScaleMode       = AutoScaleMode.Dpi;
-            Text            = existing == null ? "Add a clock" : "Change clock";
+            Text            = homeOnly ? "Your city" : existing == null ? "Add a clock" : "Change clock";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition   = FormStartPosition.CenterScreen;
             MinimizeBox     = false;
@@ -167,6 +174,24 @@ namespace TaskbarClocks
             Controls.Add(cancel);
             AcceptButton = ok;
             CancelButton = cancel;
+
+            if (homeOnly)
+            {
+                // Drop the label rows above the city and the colour rows below the time
+                // zone, and close the gaps they leave.
+                const int labelRows = 54, colourTop = 300;
+                var all = new Control[Controls.Count];
+                Controls.CopyTo(all, 0);
+                foreach (Control ctl in all)
+                {
+                    if (ctl == ok || ctl == cancel) continue;
+                    if (ctl.Top < labelRows + 8 || ctl.Top >= colourTop) Controls.Remove(ctl);
+                    else ctl.Top -= labelRows;
+                }
+                ok.Text    = "Save";
+                ok.Top     = cancel.Top = colourTop - labelRows;
+                ClientSize = new Size(ClientSize.Width, ok.Bottom + 14);
+            }
 
             if (existing != null)
             {
@@ -430,7 +455,7 @@ namespace TaskbarClocks
                        _search);
             else if (!ColourCode.TryParse(_hex.Text, out c))
                 Refuse("That hex code is not a colour. It should look like #3B8EEA.", _hex);
-            else if (_label.Text.Trim().Length == 0 && _city.Text.Trim().Length == 0)
+            else if (!_homeOnly && _label.Text.Trim().Length == 0 && _city.Text.Trim().Length == 0)
                 Refuse("Give the clock a label or a city, so you can tell it apart.", _label);
             else
             {

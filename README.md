@@ -4,9 +4,11 @@ Up to four clocks for other places, each with your own label and colour, sitting
 left of the system tray:
 
 ```
- Anna 23:00   Ben 12:00
-Carla 08:00   Dev 17:30
+Anna 00:07 (+9)    Ben 13:07 (-2)
+ Dev 18:37 (+3:30) Eli 09:07 (-6)
 ```
+
+The bracket after each time is how far that clock is ahead of (+) or behind (-) you.
 
 Same docking as [Taskbar Timer](../taskbar-timer/README.md). Windows 11 removed the
 deskband API, so this is a small always-on-top window placed against the notification
@@ -15,6 +17,8 @@ area rather than something hosted inside the taskbar.
 ## What it does
 
 - Shows up to four clocks, each as **label + time** in a colour you pick
+- Shows each clock's **difference from you**, e.g. `(+6)`, `(-1)`, `(+5:30)`. The bracket is
+  left off when a clock keeps your own time
 - Finds **any town or city**, not just big ones (see below)
 - Lays them out in one row, or in two rows stacked inside the taskbar's height
 - Text size is yours to choose; anything too big for the taskbar shrinks to fit
@@ -31,7 +35,18 @@ area rather than something hosted inside the taskbar.
 | Left click on "+ Add a clock" | Add the first clock |
 | Left drag | Move it; it stops following the tray |
 | Hover | Details for the clock under the pointer |
-| Right click | Each clock (Change, Move earlier/later, Remove), Add a clock, Layout, Text size, Background, 24-hour time, Snap back, Start with Windows, Exit |
+| Right click | Each clock (Change, Move earlier/later, Remove), Your time zone, Add a clock, Layout, Text size, Background, 24-hour time, Snap back, Start with Windows, Exit |
+
+**Your time zone** (right-click → Your time zone):
+
+- **Follow this PC** *(default)*: the differences are worked out from the PC's own time
+  zone, and move with it if you change the PC's time zone, e.g. when travelling.
+- **Set your city...**: uses the same built-in list, Search and "Same time zone as" as
+  adding a clock.
+
+The differences update straight away when you change either one, and again whenever
+daylight saving starts or ends for you or for a clock. Hovering over a clock also says it
+in words, e.g. "9 hours ahead of you (Cape Town)".
 
 **Adding or changing a clock:**
 
@@ -130,6 +145,7 @@ but close the clocks first.
 | `Background` | `Grey`, `White` or `Black`. Grey is `#E4E4E4` in light mode and `#202020` in dark |
 | `FontSize` | Text size in points (default 10); shrinks to fit the taskbar |
 | `Use24Hour` | `true` or `false` |
+| `HomeCity` / `HomeZone` | Your city and its Windows time zone id. A blank `HomeZone` follows this PC |
 | `AutoPosition` | `true` follows the tray, `false` uses `ManualX` / `ManualY` |
 
 ## Notes

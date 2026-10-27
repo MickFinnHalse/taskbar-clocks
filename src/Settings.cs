@@ -44,6 +44,11 @@ namespace TaskbarClocks
         public ClockBackground  Background   { get; set; }
         public bool             Use24Hour    { get; set; }
         public bool             AutoPosition { get; set; }
+
+        // Where the user is, for the (+6) / (-1) after each time. An empty zone means
+        // "follow this PC's own time zone", which is the default.
+        public string           HomeCity     { get; set; }
+        public string           HomeZoneId   { get; set; }
         public int              ManualX      { get; set; }
         public int              ManualY      { get; set; }
         public float            FontSize     { get; set; }   // largest size; shrinks to fit the taskbar
@@ -67,6 +72,8 @@ namespace TaskbarClocks
                 Background   = ClockBackground.Grey,
                 Use24Hour    = true,
                 AutoPosition = true,
+                HomeCity     = "",
+                HomeZoneId   = "",
                 ManualX      = -1,
                 ManualY      = -1,
                 FontSize     = 10f
@@ -103,6 +110,8 @@ namespace TaskbarClocks
                         case "manualx":      s.ManualX      = ParseInt(v, s.ManualX);        break;
                         case "manualy":      s.ManualY      = ParseInt(v, s.ManualY);        break;
                         case "fontsize":     s.FontSize     = ParseFloat(v, s.FontSize);     break;
+                        case "homecity":     s.HomeCity     = v;                             break;
+                        case "homezone":     s.HomeZoneId   = v;                             break;
                     }
                 }
             }
@@ -126,6 +135,8 @@ namespace TaskbarClocks
                 sb.AppendLine("# Layout     = Auto (two rows at four clocks) | Row | TwoRows");
                 sb.AppendLine("# Background = Grey | White | Black");
                 sb.AppendLine("# FontSize = largest size in points; shrinks automatically to fit the taskbar");
+                sb.AppendLine("# HomeCity / HomeZone = where you are, for the (+6) after each time;");
+                sb.AppendLine("#            HomeZone blank = follow this PC's own time zone");
                 for (int i = 0; i < Clocks.Count && i < MaxClocks; i++)
                 {
                     ClockEntry c = Clocks[i];
@@ -139,6 +150,8 @@ namespace TaskbarClocks
                 sb.AppendLine("ManualX      = " + ManualX);
                 sb.AppendLine("ManualY      = " + ManualY);
                 sb.AppendLine("FontSize     = " + FontSize.ToString(CultureInfo.InvariantCulture));
+                sb.AppendLine("HomeCity     = " + Clean(HomeCity));
+                sb.AppendLine("HomeZone     = " + (HomeZoneId ?? ""));
                 File.WriteAllText(Path, sb.ToString());
             }
             catch { }

@@ -16,12 +16,14 @@ namespace TaskbarClocks
 
         private readonly List<TimeZoneInfo> _zones = new List<TimeZoneInfo>();   // parallel to _cfg.Clocks; null if missing
         private string[]    _times     = new string[0];
+        private string[]    _offsets   = new string[0];   // " (+6)" after each time, or ""
+        private bool        _offsetsChanged;
+        private TimeZoneInfo _home;                        // where the user is
         private Rectangle[] _cells     = new Rectangle[0];
         private int[]       _cellTimeX = new int[0];   // where each clock's time starts
         private Font        _font;
         private Bitmap      _frame;                    // the last thing drawn, painted as is
         private float       _fittedSize;               // the size actually in use after shrinking
-        private int         _timeW;
         private int         _maxHeight;
 
         private int  _housekeeping;
@@ -146,11 +148,17 @@ namespace TaskbarClocks
             TimeZoneInfo.ClearCachedData();
             _zones.Clear();
             foreach (ClockEntry c in _cfg.Clocks)
-            {
-                TimeZoneInfo tz = null;
-                try { tz = TimeZoneInfo.FindSystemTimeZoneById(c.ZoneId); } catch { }
-                _zones.Add(tz);
-            }
+                _zones.Add(FindZone(c.ZoneId));
+
+            // Clearing the cache also refreshes TimeZoneInfo.Local, so following the PC
+            // picks up a change to the PC's own time zone here too.
+            _home = FindZone(_cfg.HomeZoneId) ?? TimeZoneInfo.Local;
+        }
+
+        private static TimeZoneInfo FindZone(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return null;
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); } catch { return null; }
         }
 
         private string TimeFormat
@@ -158,30 +166,58 @@ namespace TaskbarClocks
             get { return _cfg.Use24Hour ? "HH:mm" : "h:mm tt"; }
         }
 
-        /// <summary>Returns true when any displayed time changed.</summary>
+        /// <summary>
+        /// Returns true when any displayed time or difference changed. A changed
+        /// difference also sets _offsetsChanged, because "(+10)" is wider than "(+9)"
+        /// and the window has to be measured again rather than just redrawn.
+        /// </summary>
         private bool UpdateTimes()
         {
             DateTime utc = DateTime.UtcNow;
-            var next = new string[_cfg.Clocks.Count];
-            bool changed = next.Length != _times.Length;
-            for (int i = 0; i < next.Length; i++)
+            int n = _cfg.Clocks.Count;
+            var times   = new string[n];
+            var offsets = new string[n];
+            bool changed = n != _times.Length || n != _offsets.Length;
+            for (int i = 0; i < n; i++)
             {
                 TimeZoneInfo tz = _zones[i];
-                next[i] = tz == null ? "--:--"
-                        : TimeZoneInfo.ConvertTimeFromUtc(utc, tz).ToString(TimeFormat, CultureInfo.InvariantCulture);
-                if (!changed && next[i] != _times[i]) changed = true;
+                times[i]   = tz == null ? "--:--"
+                           : TimeZoneInfo.ConvertTimeFromUtc(utc, tz).ToString(TimeFormat, CultureInfo.InvariantCulture);
+                offsets[i] = tz == null ? "" : OffsetText(tz.GetUtcOffset(utc) - _home.GetUtcOffset(utc));
+                if (!changed && times[i] != _times[i]) changed = true;
+                if (i < _offsets.Length && offsets[i] != _offsets[i]) _offsetsChanged = true;
             }
-            _times = next;
+            if (n != _offsets.Length) _offsetsChanged = true;
+            if (_offsetsChanged) changed = true;
+            _times   = times;
+            _offsets = offsets;
             return changed;
+        }
+
+        /// <summary>" (+6)", " (-1)", " (+5:30)"; nothing when the clock keeps the user's own time.</summary>
+        public static string OffsetText(TimeSpan diff)
+        {
+            if (diff == TimeSpan.Zero) return "";
+            string sign = diff < TimeSpan.Zero ? "-" : "+";
+            TimeSpan d = diff.Duration();
+            string amount = d.Minutes == 0
+                ? ((int)d.TotalHours).ToString(CultureInfo.InvariantCulture)
+                : string.Format(CultureInfo.InvariantCulture, "{0}:{1:00}", (int)d.TotalHours, d.Minutes);
+            return " (" + sign + amount + ")";
+        }
+
+        /// <summary>Brings the display up to date: redrawn, or re-measured if a difference changed.</summary>
+        private void RefreshTimes()
+        {
+            if (!UpdateTimes()) return;
+            if (_offsetsChanged) Relayout();
+            else Render();
+            if (_hover >= 0) RefreshTip();
         }
 
         private void OnTick(object sender, EventArgs e)
         {
-            if (UpdateTimes())
-            {
-                Render();
-                if (_hover >= 0) RefreshTip();
-            }
+            RefreshTimes();
 
             // Every 2s: the taskbar may have moved or changed height, and z-order among
             // topmost windows drifts.
@@ -198,7 +234,7 @@ namespace TaskbarClocks
             {
                 _zoneRefresh = 0;
                 ResolveZones();
-                if (UpdateTimes()) Render();
+                RefreshTimes();
             }
         }
 
@@ -247,6 +283,7 @@ namespace TaskbarClocks
         /// </summary>
         private void Relayout()
         {
+            _offsetsChanged = false;
             int n = _cfg.Clocks.Count;
             int rows, cols;
             GridShape(n, out rows, out cols);
@@ -275,18 +312,22 @@ namespace TaskbarClocks
                 }
                 else
                 {
-                    // The widest time this format can show, so nothing jitters sideways
-                    // as the minutes tick over.
-                    _timeW = TextWidth(g, _cfg.Use24Hour ? "00:00" : "00:00 PM", _font);
+                    // Each clock's time is measured as the widest time this format can show
+                    // plus its own " (+6)", so nothing jitters sideways as the minutes tick
+                    // over. Differences only change with daylight saving or a new home city,
+                    // and those trigger a fresh layout.
+                    string widestTime = _cfg.Use24Hour ? "00:00" : "00:00 PM";
 
                     // Each column is as wide as its widest label. Labels are right-aligned
                     // in it, so every label ends LabelGap before its time and the times
                     // still line up down the column.
                     var labelW = new int[cols];
+                    var timeW  = new int[cols];
                     for (int i = 0; i < n; i++)
                     {
-                        int w = Math.Min(TextWidth(g, _cfg.Clocks[i].Caption, _font), MaxLabel);
-                        labelW[i % cols] = Math.Max(labelW[i % cols], w);
+                        int c = i % cols;
+                        labelW[c] = Math.Max(labelW[c], Math.Min(TextWidth(g, _cfg.Clocks[i].Caption, _font), MaxLabel));
+                        timeW[c]  = Math.Max(timeW[c], TextWidth(g, widestTime + _offsets[i], _font));
                     }
 
                     var colX = new int[cols];
@@ -294,7 +335,7 @@ namespace TaskbarClocks
                     for (int c = 0; c < cols; c++)
                     {
                         colX[c] = x;
-                        x += labelW[c] + LabelGap + _timeW + ColGap;
+                        x += labelW[c] + LabelGap + timeW[c] + ColGap;
                     }
 
                     _cells     = new Rectangle[n];
@@ -302,7 +343,7 @@ namespace TaskbarClocks
                     for (int i = 0; i < n; i++)
                     {
                         int r = i / cols, c = i % cols;
-                        _cells[i]     = new Rectangle(colX[c], PadY + r * lineH, labelW[c] + LabelGap + _timeW, lineH);
+                        _cells[i]     = new Rectangle(colX[c], PadY + r * lineH, labelW[c] + LabelGap + timeW[c], lineH);
                         _cellTimeX[i] = colX[c] + labelW[c] + LabelGap;
                     }
                     ClientSize = new Size(x - ColGap + PadX, rows * lineH + PadY * 2);
@@ -364,7 +405,7 @@ namespace TaskbarClocks
                         int w = Math.Min(TextWidth(g, c.Caption, _font), MaxLabel);
                         g.DrawString(c.Caption, _font, b,
                                      new RectangleF(labelRight - w, r.Y, w + 1, r.Height), Typo);
-                        g.DrawString(_times[i], _font, b, _cellTimeX[i], r.Y, Typo);
+                        g.DrawString(_times[i] + _offsets[i], _font, b, _cellTimeX[i], r.Y, Typo);
                     }
                 }
             }
@@ -418,13 +459,26 @@ namespace TaskbarClocks
 
             DateTime utc   = DateTime.UtcNow;
             DateTime there = TimeZoneInfo.ConvertTimeFromUtc(utc, tz);
-            DateTime here  = DateTime.Now;
-            string day = there.Date > here.Date ? " (tomorrow here)"
-                       : there.Date < here.Date ? " (yesterday here)" : "";
+            DateTime here  = TimeZoneInfo.ConvertTimeFromUtc(utc, _home);   // the user's date, not the PC's
+            string day = there.Date > here.Date ? " (tomorrow for you)"
+                       : there.Date < here.Date ? " (yesterday for you)" : "";
             return head + "\r\n"
                  + there.ToString("ddd d MMM", CultureInfo.CurrentCulture) + ", "
                  + there.ToString(TimeFormat, CultureInfo.InvariantCulture) + day + "\r\n"
-                 + DaylightSaving.Describe(tz, utc);
+                 + DaylightSaving.Describe(tz, utc) + "\r\n"
+                 + Relative(tz.GetUtcOffset(utc) - _home.GetUtcOffset(utc));
+        }
+
+        /// <summary>"6 hours ahead of you (Cape Town)", "Same time as you (this PC)".</summary>
+        private string Relative(TimeSpan diff)
+        {
+            string where = " (" + HomeName() + ")";
+            if (diff == TimeSpan.Zero) return "Same time as you" + where;
+            TimeSpan d = diff.Duration();
+            string amount = d.Minutes == 0
+                ? (int)d.TotalHours + ((int)d.TotalHours == 1 ? " hour" : " hours")
+                : string.Format(CultureInfo.InvariantCulture, "{0}h {1:00}m", (int)d.TotalHours, d.Minutes);
+            return amount + (diff > TimeSpan.Zero ? " ahead of you" : " behind you") + where;
         }
 
         // ---------- input ----------
@@ -518,6 +572,18 @@ namespace TaskbarClocks
                 sub.DropDownItems.Add(new ToolStripMenuItem("Remove", null, delegate { RemoveClock(idx); }));
                 items.Add(sub);
             }
+
+            // Where the user is, which every (+6) is measured from.
+            var home = new ToolStripMenuItem("Your time zone");
+            home.DropDownItems.Add(new ToolStripMenuItem(
+                "Follow this PC  (" + TimeZoneInfo.Local.DisplayName.Replace("&", "&&") + ")", null,
+                delegate { SetHome("", ""); }) { Checked = string.IsNullOrEmpty(_cfg.HomeZoneId) });
+            bool ownCity = !string.IsNullOrEmpty(_cfg.HomeZoneId);
+            home.DropDownItems.Add(new ToolStripMenuItem(
+                ownCity ? "Your city: " + HomeName().Replace("&", "&&") + "  (change...)" : "Set your city...", null,
+                delegate { PickHome(); }) { Checked = ownCity });
+            items.Add(home);
+            items.Add(new ToolStripSeparator());
 
             bool full = _cfg.Clocks.Count >= Settings.MaxClocks;
             items.Add(new ToolStripMenuItem(full ? "Add a clock (4 is the most)" : "Add a clock...", null,
@@ -651,6 +717,37 @@ namespace TaskbarClocks
             Committed();
         }
 
+        private void PickHome()
+        {
+            var current = new ClockEntry
+            {
+                Label  = "",
+                City   = _cfg.HomeCity,
+                ZoneId = string.IsNullOrEmpty(_cfg.HomeZoneId) ? TimeZoneInfo.Local.Id : _cfg.HomeZoneId,
+                Colour = Palette.StartingColours[0]
+            };
+            using (var dlg = new ClockDialog(current, current.Colour, _cfg.Use24Hour, _cfg.Background, true))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                SetHome(dlg.Result.City, dlg.Result.ZoneId);
+            }
+        }
+
+        /// <summary>An empty zone means follow this PC. Every difference is worked out again.</summary>
+        private void SetHome(string city, string zoneId)
+        {
+            _cfg.HomeCity   = city ?? "";
+            _cfg.HomeZoneId = zoneId ?? "";
+            Committed();
+        }
+
+        /// <summary>The user's city, or the zone's name when only a zone was chosen.</summary>
+        private string HomeName()
+        {
+            if (!string.IsNullOrEmpty(_cfg.HomeCity)) return _cfg.HomeCity;
+            return string.IsNullOrEmpty(_cfg.HomeZoneId) ? "this PC" : _home.StandardName;
+        }
+
         private void Committed()
         {
             _cfg.Save();
@@ -687,11 +784,12 @@ namespace TaskbarClocks
                 Render();
             };
 
-            // Fires when the PC's own clock or time zone changes.
+            // Fires when the PC's own clock or time zone changes - which, while following
+            // the PC, also moves every (+6).
             Microsoft.Win32.SystemEvents.TimeChanged += (s, e) =>
             {
                 ResolveZones();
-                if (UpdateTimes()) Render();
+                RefreshTimes();
             };
         }
 
