@@ -90,9 +90,16 @@ powershell -ExecutionPolicy Bypass -File "H:\My Drive\Master\Illumin-Ed\Tools\Cl
 ```
 
 Compiles with the C# compiler already in `C:\Windows\Microsoft.NET\`. No SDK, no NuGet,
-no .NET download. **Writes (overwriting) `TaskbarClocks.exe` in this folder and copies it to
-`C:\Tools\TaskbarClocks`**, closing any running copy first. Run it from there, not from H:,
-for the same antivirus reason as the timer.
+no .NET download. Either way it closes any running copy of the clocks first.
+
+| Command | What it does |
+|---|---|
+| `build.ps1` | Builds a **test copy** in `C:\Tools\_dev\TaskbarClocks` and starts it. The test copy keeps its own `settings.ini`. |
+| `build.ps1 -Install` | Builds the same way, then copies the exe into **this folder on H:** and starts it. This is the copy the desktop shortcut runs, with your real `settings.ini`. |
+
+Test builds go to local disk under `C:\Tools` because that is the folder AVG has an
+exception for. Every rebuild is a brand-new executable, and AVG flags new executables it
+finds anywhere else (it refuses exceptions under AppData).
 
 ## Settings
 

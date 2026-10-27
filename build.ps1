@@ -1,14 +1,26 @@
 # Builds TaskbarClocks.exe using the C# compiler that ships with Windows.
 # Nothing to install: no SDK, no NuGet, no .NET download.
 #
-# CHANGES ON DISK: writes (overwrites) TaskbarClocks.exe in this folder, and copies it to C:\Tools\TaskbarClocks
-#                 (closing any copy of the clocks already running there).
+#   build.ps1            builds a TEST copy in C:\Tools\_dev\TaskbarClocks and starts it
+#   build.ps1 -Install   builds, then installs it here on H: (the copy the desktop shortcut runs)
+#
+# CHANGES ON DISK: writes (overwrites) C:\Tools\_dev\TaskbarClocks\TaskbarClocks.exe.
+#                  With -Install, also overwrites TaskbarClocks.exe in this folder.
+#                  Either way it first closes any copy of the clocks that is running.
+#                  settings.ini files are never touched: the test copy keeps its own.
+#
+# Why test in C:\Tools\_dev: it is local disk, and C:\Tools is the folder AVG has an
+# exception for. Every rebuild is a brand-new executable to an antivirus, and AVG flags
+# new executables it finds anywhere else. (AVG refuses exceptions under AppData.)
+
+param([switch]$Install)
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $csc  = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$out  = Join-Path $root 'TaskbarClocks.exe'
+$dev  = 'C:\Tools\_dev\TaskbarClocks'
+$out  = Join-Path $dev 'TaskbarClocks.exe'
 
 if (-not (Test-Path $csc)) {
     throw "C# compiler not found at $csc"
@@ -17,6 +29,15 @@ if (-not (Test-Path $csc)) {
 $sources = Get-ChildItem -Path (Join-Path $root 'src') -Filter *.cs | ForEach-Object { $_.FullName }
 if ($sources.Count -eq 0) { throw "No .cs files found in $root\src" }
 
+# Only one copy of the clocks can run, and a running exe cannot be overwritten.
+Get-Process TaskbarClocks -ErrorAction SilentlyContinue | ForEach-Object {
+    $_.CloseMainWindow() | Out-Null
+    Start-Sleep -Milliseconds 400
+    if (-not $_.HasExited) { $_.Kill() }
+}
+Start-Sleep -Milliseconds 400
+
+New-Item -ItemType Directory -Path $dev -Force | Out-Null
 Write-Host "Compiling $($sources.Count) source files..." -ForegroundColor Cyan
 
 $refs = @(
@@ -26,7 +47,7 @@ $refs = @(
     '/reference:System.Web.Extensions.dll'   # JSON reader for the place search
 )
 
-$args = @(
+$cscArgs = @(
     '/nologo',
     '/target:winexe',
     '/optimize+',
@@ -34,28 +55,19 @@ $args = @(
     "/out:$out"
 ) + $refs + $sources
 
-& $csc $args
+& $csc $cscArgs
 if ($LASTEXITCODE -ne 0) { throw "Compile failed with exit code $LASTEXITCODE" }
 
 Write-Host "Built: $out" -ForegroundColor Green
 Write-Host ("Size:  {0:N0} bytes" -f (Get-Item $out).Length)
 
-# Deploy to local disk and run from there. Running off H: means Google Drive has to
-# materialise the file on every launch, which reads as a brand-new binary to the
-# antivirus and earns a fresh scan each time. Local disk gets scanned once.
-#
-# C:\Tools deliberately, NOT AppData\Local\Programs: AVG refuses folder exceptions
-# anywhere under AppData because that is where most malware stages itself.
-$install = 'C:\Tools\TaskbarClocks'
-New-Item -ItemType Directory -Path $install -Force | Out-Null
-
-Get-Process TaskbarClocks -ErrorAction SilentlyContinue | ForEach-Object {
-    $_.CloseMainWindow() | Out-Null
-    Start-Sleep -Milliseconds 400
-    if (-not $_.HasExited) { $_.Kill() }
+if ($Install) {
+    $installed = Join-Path $root 'TaskbarClocks.exe'
+    Copy-Item $out $installed -Force
+    Write-Host "Installed: $installed" -ForegroundColor Green
+    Start-Process -FilePath $installed -WorkingDirectory $root
 }
-Start-Sleep -Milliseconds 400
-
-Copy-Item $out $install -Force
-Write-Host "Deployed to: $install" -ForegroundColor Green
-Write-Host 'Run it from there, not from H:.' -ForegroundColor DarkGray
+else {
+    Start-Process -FilePath $out -WorkingDirectory $dev
+    Write-Host 'Started the test copy. Run with -Install to update the one on H:.' -ForegroundColor DarkGray
+}
