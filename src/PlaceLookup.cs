@@ -56,20 +56,30 @@ namespace TaskbarClocks
                 client.Dispose();
                 if (e.Error != null)
                 {
-                    done(new List<Place>(), "Couldn't reach the place search (" + e.Error.Message + ")");
+                    done(new List<Place>(), "Couldn't reach the place search - are you offline?");
                     return;
                 }
-                try { done(Parse(e.Result), null); }
-                catch (Exception ex) { done(new List<Place>(), "The place search sent back something unreadable (" + ex.Message + ")"); }
+                try
+                {
+                    int unplaceable;
+                    List<Place> found = Parse(e.Result, out unplaceable);
+                    // Saying "nothing found" when the town WAS found but its zone could
+                    // not be matched would send the user looking for a typo.
+                    done(found, found.Count == 0 && unplaceable > 0
+                                ? "Found it, but this PC can't match its time zone."
+                                : null);
+                }
+                catch { done(new List<Place>(), "The place search sent back something unreadable."); }
             };
             string url = Endpoint + "?name=" + Uri.EscapeDataString(name.Trim())
                        + "&count=20&language=en&format=json";
             client.DownloadStringAsync(new Uri(url));
         }
 
-        private static List<Place> Parse(string json)
+        private static List<Place> Parse(string json, out int unplaceable)
         {
             var found = new List<Place>();
+            unplaceable = 0;
             var root = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
             object raw;
             if (root == null || !root.TryGetValue("results", out raw) || !(raw is IEnumerable)) return found;
@@ -86,7 +96,7 @@ namespace TaskbarClocks
                 if (!code.StartsWith("PPL", StringComparison.Ordinal)) continue;
 
                 string zone = WindowsZoneFor(Str(r, "timezone"));
-                if (zone == null) continue;
+                if (zone == null) { unplaceable++; continue; }
 
                 var p = new Place
                 {
@@ -111,12 +121,33 @@ namespace TaskbarClocks
                                                             int capacity, ref int status);
 
         /// <summary>
+        /// Where the icu.dll that ships with Windows lags Windows' own time zone list.
+        /// ICU 72 (Windows 11, 2026) still maps these places to zones that change their
+        /// clocks, while Windows Update has since added zones for the new rules:
+        /// British Columbia, Alberta (with the Northwest Territories) and Manitoba stopped
+        /// changing in 2026 (tzdata 2026b-e); Ciudad Juarez has followed US Mountain time
+        /// since 2022, and ICU has no mapping for it at all. Each override is used only if
+        /// this PC has the zone; otherwise ICU's answer stands.
+        /// </summary>
+        private static readonly Dictionary<string, string> Overrides = new Dictionary<string, string>
+        {
+            { "America/Vancouver",     "British Columbia Standard Time" },
+            { "America/Edmonton",      "Alberta Standard Time" },
+            { "America/Yellowknife",   "Alberta Standard Time" },
+            { "America/Inuvik",        "Alberta Standard Time" },
+            { "America/Winnipeg",      "Manitoba Standard Time" },
+            { "America/Ciudad_Juarez", "Mountain Standard Time" }
+        };
+
+        /// <summary>
         /// "America/Toronto" -> "Eastern Standard Time", or null when Windows does not
         /// know the zone. icu.dll ships with Windows 10 1903 and later.
         /// </summary>
         public static string WindowsZoneFor(string iana)
         {
             if (string.IsNullOrEmpty(iana)) return null;
+            string preferred;
+            if (Overrides.TryGetValue(iana, out preferred) && Zones.Exists(preferred)) return preferred;
             try
             {
                 var sb = new StringBuilder(128);

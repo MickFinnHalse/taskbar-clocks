@@ -10,19 +10,39 @@ namespace TaskbarClocks
         public string ZoneId  { get; private set; }   // Windows id, read by TimeZoneInfo
         public string Iana    { get; private set; }   // tz database id, kept to verify the mapping
 
-        public City(string name, string country, string zoneId, string iana)
+        /// <summary>
+        /// zoneIds is "preferred;fallback": the first Windows zone this PC actually has.
+        /// Lets a city move to a zone Windows Update added recently without breaking on a
+        /// PC that hasn't had that update yet.
+        /// </summary>
+        public City(string name, string country, string zoneIds, string iana)
         {
-            Name = name; Country = country; ZoneId = zoneId; Iana = iana;
+            Name = name; Country = country; Iana = iana;
+            string[] ids = zoneIds.Split(';');
+            ZoneId = ids[ids.Length - 1];
+            foreach (string id in ids)
+                if (Zones.Exists(id)) { ZoneId = id; break; }
         }
 
         public string Display { get { return Name + ", " + Country; } }
     }
 
+    public static class Zones
+    {
+        public static bool Exists(string id)
+        {
+            try { TimeZoneInfo.FindSystemTimeZoneById(id); return true; }
+            catch { return false; }
+        }
+    }
+
     /// <summary>
     /// Cities offered when adding a clock. Each maps to a Windows time zone, and Windows
-    /// holds the daylight-saving rules for that zone, kept current by Windows Update - so
-    /// nothing here needs touching when a country changes its clocks. A city not listed
-    /// here can still be added by picking its time zone directly in the dialog.
+    /// holds the daylight-saving rules for that zone, kept current by Windows Update. A
+    /// rule change inside an existing zone needs nothing here. A place that SPLITS off into
+    /// a new zone does: in 2026 British Columbia, Alberta and Manitoba stopped changing
+    /// their clocks, Windows gave each its own zone, and the entries below had to move.
+    /// A city not listed here can still be found with Search or picked by time zone.
     ///
     /// ASCII only: csc reads a BOM-less source file in the system code page.
     /// </summary>
@@ -185,20 +205,20 @@ namespace TaskbarClocks
             "Seattle|United States|Pacific Standard Time|America/Los_Angeles",
             "Portland|United States|Pacific Standard Time|America/Los_Angeles",
             "Las Vegas|United States|Pacific Standard Time|America/Los_Angeles",
-            "Vancouver|Canada|Pacific Standard Time|America/Vancouver",
+            "Vancouver|Canada|British Columbia Standard Time;Pacific Standard Time|America/Vancouver",
             "Tijuana|Mexico|Pacific Standard Time (Mexico)|America/Tijuana",
             "Phoenix|United States|US Mountain Standard Time|America/Phoenix",
             "Denver|United States|Mountain Standard Time|America/Denver",
             "Salt Lake City|United States|Mountain Standard Time|America/Denver",
-            "Calgary|Canada|Mountain Standard Time|America/Edmonton",
-            "Edmonton|Canada|Mountain Standard Time|America/Edmonton",
+            "Calgary|Canada|Alberta Standard Time;Mountain Standard Time|America/Edmonton",
+            "Edmonton|Canada|Alberta Standard Time;Mountain Standard Time|America/Edmonton",
             "Chicago|United States|Central Standard Time|America/Chicago",
             "Houston|United States|Central Standard Time|America/Chicago",
             "Dallas|United States|Central Standard Time|America/Chicago",
             "Austin|United States|Central Standard Time|America/Chicago",
             "Minneapolis|United States|Central Standard Time|America/Chicago",
             "New Orleans|United States|Central Standard Time|America/Chicago",
-            "Winnipeg|Canada|Central Standard Time|America/Winnipeg",
+            "Winnipeg|Canada|Manitoba Standard Time;Central Standard Time|America/Winnipeg",
             "Regina|Canada|Canada Central Standard Time|America/Regina",
             "Mexico City|Mexico|Central Standard Time (Mexico)|America/Mexico_City",
             "Guadalajara|Mexico|Central Standard Time (Mexico)|America/Mexico_City",

@@ -38,7 +38,9 @@ area rather than something hosted inside the taskbar.
 - **Label:** usually the person's name. If you leave it blank, the place name is shown.
 - **City or town:** pick from the 191 built-in cities as you type. For anywhere else,
   press **Search** (or Enter) and choose from what comes back, e.g. *Port Hope, Ontario,
-  Canada*. The time zone fills in by itself.
+  Canada*. The time zone fills in by itself. A name that is neither a built-in city nor
+  a search result can't be saved until you search for it or pick its time zone, so a
+  renamed clock never quietly keeps the old place's time.
 - **Same time zone as:** if the search finds nothing, or there is no internet, type a
   nearby built-in city instead. The clock keeps the name you typed and uses that city's
   time zone.
@@ -78,10 +80,25 @@ Each clock stores a Windows time zone id, and the time is worked out with
 through Windows Update, so a country changing its clocks needs no change here. The clocks
 also re-read the rules every hour, so an update is picked up without a restart.
 
-Checked on 27 Oct 2026: all 191 built-in cities were compared with the IANA tz database
-at 26 dates across 2026–27, and every one matched. The one difference, Casablanca, turned
-out to be the comparison copy being out of date: Morocco moved to permanent UTC+0 on
-20 Sep 2026 (tzdata 2026c), and Windows already had that rule.
+A rule change *within* a zone needs nothing here. A place that **splits off into a new
+Windows zone** does. In 2026, British Columbia, Alberta (with the Northwest Territories)
+and Manitoba stopped changing their clocks (tzdata 2026b–e). Windows Update gave each its
+own zone, so Vancouver, Calgary, Edmonton and Winnipeg now use those, falling back to the
+old US-style zones on a PC that hasn't had the update.
+
+The ICU library in Windows maps tz zones to Windows zones, and it lags behind: it still
+sends those provinces to the US zones and can't place Ciudad Juárez at all. The town
+search corrects these few by hand (`Overrides` in `PlaceLookup.cs`). If a town is found
+but its zone still can't be matched, the dialog says so and offers "Same time zone as".
+
+Checked on 27 Oct 2026 against the tz database's release notes up to 2026e. An earlier
+check compared against an outdated copy (2025.3) and missed the Canadian changes. It only
+caught Casablanca, where Windows was already right: Morocco moved to permanent UTC+0 on
+20 Sep 2026.
+
+**Known limitation:** for one hour at midnight on 1 January, .NET reads the new Canadian
+zones' year boundary wrongly and shows those clocks an hour behind. Every other hour is
+correct.
 
 ## Build
 

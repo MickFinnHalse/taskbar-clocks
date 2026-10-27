@@ -36,6 +36,9 @@ namespace TaskbarClocks
         private bool  _settingHex;
         private bool  _settingCity;
         private Place _picked;       // the search result chosen, while the city box still shows it
+        private bool  _zoneSettled;  // the zone was set for the city now showing, not left over
+        private bool  _selectingZone;
+        private int   _searchSeq;    // only the latest search's answer counts
 
         public ClockEntry Result { get; private set; }
 
@@ -74,23 +77,25 @@ namespace TaskbarClocks
             new ToolTip().SetToolTip(_search,
                 "Looks the name up online with Open-Meteo's free place search, so small towns can be found.");
 
-            _status = new Label { Bounds = new Rectangle(12, 114, 416, 18), ForeColor = SystemColors.GrayText };
+            // Two lines: the after-a-failed-search messages need the room, and on one line
+            // the instruction to use the fallback below was cut off.
+            _status = new Label { Bounds = new Rectangle(12, 114, 416, 34), ForeColor = SystemColors.GrayText };
             Controls.Add(_status);
 
             // One slot, two uses: the search results, or - when the search finds nothing -
             // the "Same time zone as" fallback.
-            _results = new ListBox { Bounds = new Rectangle(12, 134, 416, 64), Visible = false, IntegralHeight = false };
+            _results = new ListBox { Bounds = new Rectangle(12, 150, 416, 50), Visible = false, IntegralHeight = false };
             _results.SelectedIndexChanged += delegate { PickResult(); };
             Controls.Add(_results);
 
             _sameAsCaption = new Label
             {
-                Text = "Same time zone as", Bounds = new Rectangle(12, 140, 120, 20), Visible = false
+                Text = "Same time zone as", Bounds = new Rectangle(12, 158, 120, 20), Visible = false
             };
             Controls.Add(_sameAsCaption);
             _sameAs = new TextBox
             {
-                Bounds             = new Rectangle(134, 137, 294, 24),
+                Bounds             = new Rectangle(134, 155, 294, 24),
                 AutoCompleteMode   = AutoCompleteMode.SuggestAppend,
                 AutoCompleteSource = AutoCompleteSource.CustomSource,
                 AutoCompleteCustomSource = BuiltInNames(),
@@ -168,12 +173,25 @@ namespace TaskbarClocks
                 _label.Text = existing.Label;
                 _city.Text  = existing.City;
                 SelectZone(existing.ZoneId);
+                _zoneSettled = true;
             }
             _city.TextChanged          += delegate { OnCityTyped(); };
             _label.TextChanged         += delegate { _preview.Invalidate(); };
-            _zone.SelectedIndexChanged += delegate { ShowTimeThere(); _preview.Invalidate(); };
+            _zone.SelectedIndexChanged += delegate
+            {
+                if (!_selectingZone) _zoneSettled = true;   // picked from the list by hand
+                ShowTimeThere();
+                _preview.Invalidate();
+            };
 
-            ShowBuiltInMatch(Cities.Find(_city.Text));
+            // A saved clock keeps the zone it was saved with, which can differ from the
+            // built-in city of the same name (a searched San Jose, California is not San
+            // Jose, Costa Rica) - so don't claim the built-in match when it isn't in use.
+            City match = Cities.Find(_city.Text);
+            if (existing != null && match != null && match.ZoneId != existing.ZoneId)
+                _status.Text = "Using the time zone saved with this clock.";
+            else
+                ShowBuiltInMatch(match);
             SetColour(_colour, true);
             ShowTimeThere();
 
@@ -200,14 +218,21 @@ namespace TaskbarClocks
             return names;
         }
 
-        /// <summary>Enter in the city box searches, rather than closing the dialog.</summary>
+        /// <summary>
+        /// Enter in the city box searches, rather than closing the dialog - unless the box
+        /// already holds a built-in city or the search result just picked, when Enter means
+        /// Add/Save as usual. While a search is out, Enter does nothing.
+        /// </summary>
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (keyData == Keys.Enter && _city.Focused && Cities.Find(_city.Text) == null
-                && _city.Text.Trim().Length > 0)
+            if (keyData == Keys.Enter && _city.Focused)
             {
-                RunSearch();
-                return true;
+                if (!_search.Enabled) return true;
+                if (_picked == null && Cities.Find(_city.Text) == null && _city.Text.Trim().Length > 0)
+                {
+                    RunSearch();
+                    return true;
+                }
             }
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -221,6 +246,7 @@ namespace TaskbarClocks
             ShowSlot(null);
             City c = Cities.Find(_city.Text);
             if (c != null) SelectZone(c.ZoneId);
+            _zoneSettled = c != null;   // a new unrecognised name has no zone yet
             ShowBuiltInMatch(c);
             _preview.Invalidate();
         }
@@ -239,13 +265,14 @@ namespace TaskbarClocks
         {
             string name = _city.Text.Trim();
             if (name.Length == 0) return;
+            int seq = ++_searchSeq;
             _search.Enabled = false;
             _status.Text = "Searching for \"" + name + "\"...";
             ShowSlot(null);
 
             PlaceLookup.Search(name, (places, error) =>
             {
-                if (IsDisposed) return;
+                if (IsDisposed || seq != _searchSeq) return;
                 _search.Enabled = true;
                 if (_city.Text.Trim() != name) return;   // typed on while it was searching
 
@@ -261,8 +288,8 @@ namespace TaskbarClocks
                     return;
                 }
 
-                _status.Text = (error ?? "No town or city called \"" + name + "\" was found.")
-                             + " Type a nearby city instead:";
+                _status.Text = (error ?? "Nothing called \"" + name + "\" was found online.")
+                             + "\r\nType a nearby city in the same time zone:";
                 ShowSlot(_sameAs);
                 _sameAs.Focus();
             });
@@ -285,6 +312,7 @@ namespace TaskbarClocks
             _city.Text = p.Name;
             _settingCity = false;
             SelectZone(p.ZoneId);
+            _zoneSettled = true;
             _status.Text = "Using " + p.Display + ".";
             _preview.Invalidate();
         }
@@ -294,13 +322,16 @@ namespace TaskbarClocks
             City c = Cities.Find(_sameAs.Text);
             if (c == null) return;
             SelectZone(c.ZoneId);
+            _zoneSettled = true;
             _status.Text = "Using the same time zone as " + c.Display + ".";
         }
 
         private void SelectZone(string id)
         {
+            _selectingZone = true;
             for (int i = 0; i < _zone.Items.Count; i++)
-                if (((TimeZoneInfo)_zone.Items[i]).Id == id) { _zone.SelectedIndex = i; return; }
+                if (((TimeZoneInfo)_zone.Items[i]).Id == id) { _zone.SelectedIndex = i; break; }
+            _selectingZone = false;
         }
 
         private TimeZoneInfo SelectedZone
@@ -392,6 +423,11 @@ namespace TaskbarClocks
             Color c;
             if (SelectedZone == null)
                 Refuse("Pick a time zone - choosing a city or town fills it in for you.", _zone);
+            else if (_city.Text.Trim().Length > 0 && !_zoneSettled)
+                // The zone showing belongs to whatever the box said before - saving it
+                // would quietly give "Smalltown" Sydney's time.
+                Refuse("Press Search to find \"" + _city.Text.Trim() + "\", or pick its time zone from the list.",
+                       _search);
             else if (!ColourCode.TryParse(_hex.Text, out c))
                 Refuse("That hex code is not a colour. It should look like #3B8EEA.", _hex);
             else if (_label.Text.Trim().Length == 0 && _city.Text.Trim().Length == 0)

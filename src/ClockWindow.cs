@@ -85,7 +85,9 @@ namespace TaskbarClocks
             MouseDown  += OnMouseDown;
             MouseMove  += OnMouseMove;
             MouseUp    += OnMouseUp;
-            MouseLeave += delegate { _hover = -1; };
+            // Clear the text as well as the index, or coming back in over a gap would pop
+            // up the last clock's details, frozen at the time they were set.
+            MouseLeave += delegate { _hover = -1; RefreshTip(); };
 
             HookSystemEvents();
         }
@@ -409,8 +411,8 @@ namespace TaskbarClocks
         {
             ClockEntry c = _cfg.Clocks[i];
             TimeZoneInfo tz = _zones[i];
-            string head = string.IsNullOrEmpty(c.Label) || c.Label == c.City
-                        ? c.City : c.Label + " - " + c.City;
+            string head = string.IsNullOrEmpty(c.City) || c.Caption == c.City
+                        ? c.Caption : c.Label + " - " + c.City;
             if (tz == null)
                 return head + "\r\nTime zone \"" + c.ZoneId + "\" is not on this PC.\r\nRight-click to change it.";
 
@@ -464,17 +466,31 @@ namespace TaskbarClocks
         {
             if (e.Button != MouseButtons.Left || !_pressed) return;
             _pressed = false;
-            if (_dragging)
-            {
-                _dragging    = false;
-                _cfg.ManualX = Location.X;
-                _cfg.ManualY = Location.Y;
-                _cfg.Save();
-            }
-            else if (_cfg.Clocks.Count == 0)
-            {
-                AddClock();
-            }
+            if (_dragging) EndDrag();
+            else if (_cfg.Clocks.Count == 0) AddClock();
+        }
+
+        /// <summary>
+        /// The mouse can be taken away mid-drag (the Windows key, a UAC prompt, another
+        /// window grabbing focus) and then no MouseUp ever comes. Finish the drag where it
+        /// got to, or the window stays "dragging" and stops following the tray for good.
+        /// Only a drag is finished here: an ordinary release can also lose capture just
+        /// before MouseUp, and a plain click must still reach MouseUp to open "Add a clock".
+        /// </summary>
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (!_dragging) return;
+            _pressed = false;
+            EndDrag();
+        }
+
+        private void EndDrag()
+        {
+            _dragging    = false;
+            _cfg.ManualX = Location.X;
+            _cfg.ManualY = Location.Y;
+            _cfg.Save();
         }
 
         // ---------- menu ----------
@@ -627,7 +643,8 @@ namespace TaskbarClocks
         private void RemoveClock(int i)
         {
             ClockEntry c = _cfg.Clocks[i];
-            string who = c.Caption == c.City ? c.City : c.Caption + " (" + c.City + ")";
+            string who = string.IsNullOrEmpty(c.City) || c.Caption == c.City ? c.Caption
+                       : c.Caption + " (" + c.City + ")";
             if (MessageBox.Show(this, "Remove the clock for " + who + "?", "Taskbar Clocks",
                                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             _cfg.Clocks.RemoveAt(i);
@@ -693,8 +710,10 @@ namespace TaskbarClocks
             TimeSpan off = tz.GetUtcOffset(utc);
             string utcText = "UTC" + (off < TimeSpan.Zero ? "-" : "+") + off.Duration().ToString(@"hh\:mm");
             if (!UsesDaylightSavingThisYear(tz, utc)) return "No daylight saving (" + utcText + ")";
-            DateTime there = TimeZoneInfo.ConvertTimeFromUtc(utc, tz);
-            return (tz.IsDaylightSavingTime(there) ? "Daylight saving on (" : "Daylight saving off (") + utcText + ")";
+            // Asked of the UTC instant, not the local time there: in the hour the clocks go
+            // back, the local time happens twice and the local overload answers "off" for
+            // both, though the first is still daylight time.
+            return (tz.IsDaylightSavingTime(utc) ? "Daylight saving on (" : "Daylight saving off (") + utcText + ")";
         }
 
         /// <summary>
