@@ -30,6 +30,7 @@ namespace TaskbarClocks
                 // Before any window exists, or tray coordinates come back virtualised
                 // on a scaled display and the clocks land in the wrong place.
                 Native.EnableDpiAwareness();
+                Autostart.Repair();
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);

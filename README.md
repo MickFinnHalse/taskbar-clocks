@@ -151,7 +151,16 @@ but close the clocks first.
 ## Notes
 
 - **Start with Windows** writes one `HKCU\...\Run` entry named `IllumEdTaskbarClocks`.
-  Unticking it removes that entry. Nothing else in the registry is touched.
+  The entry doesn't point at the exe itself. It runs a small script,
+  `C:\Tools\TaskbarClocks\start-taskbar-clocks.vbs`, which the app writes. At sign-in
+  Windows works through its startup list before Google Drive has mounted H:, so an entry
+  pointing straight at the exe on H: silently did nothing. The script waits up to 10
+  minutes for the exe to appear, then starts it. Unticking removes the entry; the script
+  is left in place and does nothing on its own. The app brings an old-style entry up to
+  date each time it starts.
+- If the app is started from a sandboxed shell (Claude Code, for one), its registry writes
+  can land in a private copy that Windows never sees. Start it from Explorer, the desktop
+  shortcut or the Start menu.
 - Only one copy runs at a time; launching a second one exits silently.
 - A full-screen app covers the clocks. Every overlay has this problem, because the taskbar
   itself is hidden then.
